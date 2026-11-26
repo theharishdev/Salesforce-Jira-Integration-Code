@@ -1,0 +1,220 @@
+public class jira_Service2 {
+
+    // INPUT FROM AGENTFORCE
+    public class JiraRequest {
+
+        @InvocableVariable(
+            label='Jira Issue Summary'
+            required=true
+        )
+        public String summary;
+
+        @InvocableVariable(
+            label='Jira Issue Description'
+            required=true
+        )
+        public String description;
+
+        @InvocableVariable(
+            label='Assignee Account ID'
+            description='Jira user Account ID'
+        )
+        public String assigneeAccountId;
+
+        @InvocableVariable(
+            label='Priority'
+            description='Highest, High, Medium, Low, Lowest'
+        )
+        public String priority;
+    }
+
+    // RESPONSE TO AGENTFORCE
+    public class JiraResponse {
+
+        @InvocableVariable(label='Jira Issue Key')
+        public String issueKey;
+
+        @InvocableVariable(label='Jira Issue URL')
+        public String issueUrl;
+
+        @InvocableVariable(label='Status')
+        public String status;
+
+        @InvocableVariable(label='Message')
+        public String message;
+    }
+
+    // AGENTFORCE ACTION
+    @InvocableMethod(
+        label='Create Jira Issue 2'
+        description='Creates Jira issue with Assignee and Priority'
+    )
+    public static List<JiraResponse> createJiraIssue(
+        List<JiraRequest> requests
+    ) {
+
+        List<JiraResponse> responses = new List<JiraResponse>();
+
+        for (JiraRequest request : requests) {
+
+            JiraResponse response = new JiraResponse();
+
+            try {
+
+                String issueKey = createIssue(
+                    request.summary,
+                    request.description,
+                    request.assigneeAccountId,
+                    request.priority
+                );
+
+                response.issueKey = issueKey;
+
+                response.issueUrl =
+                    'https://harishragavendar06072004.atlassian.net/browse/' +
+                    issueKey;
+
+                response.status = 'Success';
+
+                response.message =
+                    'Jira issue ' + issueKey +
+                    ' was created successfully.';
+
+            } catch (Exception e) {
+
+                response.status = 'Failed';
+
+                response.message =
+                    'Failed to create Jira issue: ' +
+                    e.getMessage();
+            }
+
+            responses.add(response);
+        }
+
+        return responses;
+    }
+
+    // JIRA API CALLOUT
+    public static String createIssue(
+        String summary,
+        String description,
+        String assigneeAccountId,
+        String priority
+    ) {
+
+        HttpRequest req = new HttpRequest();
+
+        req.setEndpoint(
+            'callout:jiraNamedCredentials/ex/jira/' +
+            '894f49c8-3d42-4339-9b4a-f20ad85c6b97' +
+            '/rest/api/3/issue'
+        );
+
+        req.setMethod('POST');
+        req.setHeader('Accept', 'application/json');
+        req.setHeader('Content-Type', 'application/json');
+
+        // JIRA FIELDS
+        Map<String, Object> fields =
+            new Map<String, Object>();
+
+        fields.put(
+            'project',
+            new Map<String, Object>{
+                'key' => 'KAN'
+            }
+        );
+
+        fields.put('summary', summary);
+
+        fields.put(
+            'issuetype',
+            new Map<String, Object>{
+                'name' => 'Task'
+            }
+        );
+
+        // DESCRIPTION - ADF FORMAT
+        fields.put(
+            'description',
+            new Map<String, Object>{
+                'type' => 'doc',
+                'version' => 1,
+                'content' => new List<Object>{
+                    new Map<String, Object>{
+                        'type' => 'paragraph',
+                        'content' => new List<Object>{
+                            new Map<String, Object>{
+                                'type' => 'text',
+                                'text' => description
+                            }
+                        }
+                    }
+                }
+            }
+        );
+
+        // ASSIGNEE
+        if (
+            String.isNotBlank(assigneeAccountId)
+        ) {
+
+            fields.put(
+                'assignee',
+                new Map<String, Object>{
+                    'accountId' => assigneeAccountId
+                }
+            );
+        }
+
+        // PRIORITY
+        if (String.isNotBlank(priority)) {
+
+            fields.put(
+                'priority',
+                new Map<String, Object>{
+                    'name' => priority
+                }
+            );
+        }
+
+        // REQUEST BODY
+        req.setBody(
+            JSON.serialize(
+                new Map<String, Object>{
+                    'fields' => fields
+                }
+            )
+        );
+
+        // CALLOUT
+        Http http = new Http();
+
+        HttpResponse res = http.send(req);
+
+        System.debug('JIRA STATUS: ' + res.getStatusCode());
+        System.debug('JIRA RESPONSE: ' + res.getBody());
+
+        // SUCCESS
+        if (
+            res.getStatusCode() >= 200 &&
+            res.getStatusCode() < 300
+        ) {
+
+            Map<String, Object> responseData =
+                (Map<String, Object>)
+                JSON.deserializeUntyped(res.getBody());
+
+            return (String) responseData.get('key');
+        }
+
+        // ERROR
+        throw new CalloutException(
+            'Jira issue creation failed: ' +
+            res.getStatusCode() +
+            ' - ' +
+            res.getBody()
+        );
+    }
+}
