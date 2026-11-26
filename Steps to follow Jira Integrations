@@ -1,0 +1,12 @@
+Create Jira project — Case Escalation Query, project key KAN.
+Create OAuth integration — OAuth 2.0, scopes and Atlassian authorization.
+Create Salesforce External Credential — Browser Flow and OAuth authentication.
+Configure Principal — JiraPrincipal, Named Principal.
+Create Named Credential — jiraNamedCredentials, API base URL.
+Create permission set — Jira_Integration_Access and principal access.
+Write Apex callout — jira_Service2 using REST API v3.
+Fix credential errors — corrected references and principal access.
+Test through Execute Anonymous — HTTP 201, KAN-10 created.
+Expose Apex to Agentforce — Invocable Method and input variables.
+Fix Agentforce action reference — use actual Apex class/action.
+Test end-to-end — Agentforce request → Salesforce Apex → Jira API.
