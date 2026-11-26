@@ -1,0 +1,676 @@
+public class gmeetServiceClass {
+
+
+    // CUSTOM EXCEPTION
+  
+
+    public class GmeetException extends Exception {}
+
+
+    // AGENTFORCE INPUT
+
+
+    public class AgentInput {
+
+        @InvocableVariable(
+            required=true
+            label='Attendee Emails'
+        )
+        public List<String> attendeeEmails;
+
+
+        @InvocableVariable(
+            required=true
+            label='Start Time'
+        )
+        public Datetime startTime;
+
+
+        @InvocableVariable(
+            required=true
+            label='End Time'
+        )
+        public Datetime endTime;
+
+
+        @InvocableVariable(
+            required=true
+            label='Meeting Name'
+        )
+        public String meetName;
+    }
+
+
+
+    // WRAPPER / AGENTFORCE OUTPUT
+
+
+    public class Wrapper {
+
+        @InvocableVariable
+        public String meetingName;
+
+        @InvocableVariable
+        public String meetingUrl;
+
+        @InvocableVariable
+        public String meetingId;
+
+        @InvocableVariable
+        public List<String> attendeeEmails;
+
+        @InvocableVariable
+        public Datetime startTime;
+
+        @InvocableVariable
+        public Datetime endTime;
+
+        @InvocableVariable
+        public Boolean existingMeeting;
+
+        @InvocableVariable
+        public String message;
+    }
+
+
+    // AGENTFORCE INVOCABLE METHOD
+
+
+    @InvocableMethod(
+        label='Create Google Meet'
+        description='Checks the requested time and creates a Google Meet if the time is available.'
+    )
+    public static List<Wrapper> createGoogleMeet(
+        List<AgentInput> inputs
+    ) {
+
+        List<Wrapper> results =
+            new List<Wrapper>();
+
+
+        for (AgentInput input : inputs) {
+
+            Wrapper result =
+                doaction(
+                    input.attendeeEmails,
+                    input.startTime,
+                    input.endTime,
+                    input.meetName
+                );
+
+            results.add(result);
+        }
+
+
+        return results;
+    }
+
+
+    // MAIN METHOD
+
+
+    public static Wrapper doaction(
+        List<String> attendeeEmails,
+        Datetime startTime,
+        Datetime endTime,
+        String meetName
+    ) {
+
+        Wrapper result = new Wrapper();
+
+
+        try {
+
+      
+            // VALIDATE ATTENDEES
+
+
+            if (
+                attendeeEmails == null ||
+                attendeeEmails.isEmpty()
+            ) {
+
+                throw new GmeetException(
+                    'At least one attendee email is required.'
+                );
+            }
+
+
+      
+            // REQUESTED MEETING TIME
+   
+
+            Datetime requestedStart = startTime;
+            Datetime requestedEnd   = endTime;
+
+
+            result.startTime =
+                requestedStart;
+
+            result.endTime =
+                requestedEnd;
+
+            result.attendeeEmails =
+                new List<String>();
+
+
+       
+            // STEP 1: CHECK EXISTING EVENTS
+
+
+            HttpRequest checkReq =
+                new HttpRequest();
+
+
+            String timeMin =
+                EncodingUtil.urlEncode(
+                    requestedStart.formatGmt(
+                        'yyyy-MM-dd\'T\'HH:mm:ss\'Z\''
+                    ),
+                    'UTF-8'
+                );
+
+
+            String timeMax =
+                EncodingUtil.urlEncode(
+                    requestedEnd.formatGmt(
+                        'yyyy-MM-dd\'T\'HH:mm:ss\'Z\''
+                    ),
+                    'UTF-8'
+                );
+
+
+            checkReq.setEndpoint(
+                'callout:GmeetNamedCredential/calendars/primary/events' +
+                '?timeMin=' + timeMin +
+                '&timeMax=' + timeMax +
+                '&singleEvents=true' +
+                '&orderBy=startTime'
+            );
+
+
+            checkReq.setMethod('GET');
+
+
+            HttpResponse checkRes =
+                new Http().send(checkReq);
+
+
+            if (
+                checkRes.getStatusCode() < 200 ||
+                checkRes.getStatusCode() >= 300
+            ) {
+
+                throw new GmeetException(
+                    'Google Calendar check failed. ' +
+                    'Status: ' +
+                    checkRes.getStatusCode() +
+                    ' Response: ' +
+                    checkRes.getBody()
+                );
+            }
+
+
+            // STEP 2: READ EXISTING EVENTS
+        
+
+            Map<String, Object> calendarResponse =
+                (Map<String, Object>)
+                JSON.deserializeUntyped(
+                    checkRes.getBody()
+                );
+
+
+            List<Object> events =
+                (List<Object>)
+                calendarResponse.get('items');
+
+
+            Boolean timeConflict = false;
+
+
+            if (events != null) {
+
+                for (Object eventObj : events) {
+
+                    Map<String, Object> event =
+                        (Map<String, Object>)
+                        eventObj;
+
+
+                    // Skip cancelled events
+
+                    if (
+                        event.containsKey('status') &&
+                        String.valueOf(
+                            event.get('status')
+                        ) == 'cancelled'
+                    ) {
+                        continue;
+                    }
+
+
+                    Map<String, Object> startData =
+                        (Map<String, Object>)
+                        event.get('start');
+
+
+                    Map<String, Object> endData =
+                        (Map<String, Object>)
+                        event.get('end');
+
+
+                    if (
+                        startData == null ||
+                        endData == null
+                    ) {
+                        continue;
+                    }
+
+
+                    String existingStart =
+                        (String)
+                        startData.get('dateTime');
+
+
+                    String existingEnd =
+                        (String)
+                        endData.get('dateTime');
+
+
+                    // Ignore all-day events
+
+                    if (
+                        existingStart == null ||
+                        existingEnd == null
+                    ) {
+                        continue;
+                    }
+
+
+                    Datetime existingStartDT =
+                        (Datetime)
+                        JSON.deserialize(
+                            '"' +
+                            existingStart +
+                            '"',
+                            Datetime.class
+                        );
+
+
+                    Datetime existingEndDT =
+                        (Datetime)
+                        JSON.deserialize(
+                            '"' +
+                            existingEnd +
+                            '"',
+                            Datetime.class
+                        );
+
+
+                    // OVERLAP CHECK
+       
+
+                    if (
+                        requestedStart < existingEndDT &&
+                        requestedEnd > existingStartDT
+                    ) {
+
+                        timeConflict = true;
+
+
+                      
+                        // EXISTING MEETING DETAILS
+                        
+
+                        result.existingMeeting =
+                            true;
+
+
+                        result.meetingName =
+                            event.containsKey('summary')
+                            ? String.valueOf(
+                                event.get('summary')
+                            )
+                            : null;
+
+
+                        result.startTime =
+                            existingStartDT;
+
+
+                        result.endTime =
+                            existingEndDT;
+
+
+                        if (event.containsKey('id')) {
+
+                            result.meetingId =
+                                String.valueOf(
+                                    event.get('id')
+                                );
+                        }
+
+
+                        if (
+                            event.containsKey(
+                                'hangoutLink'
+                            )
+                        ) {
+
+                            result.meetingUrl =
+                                String.valueOf(
+                                    event.get(
+                                        'hangoutLink'
+                                    )
+                                );
+                        }
+
+
+                        result.message =
+                            'A meeting already exists for the requested time.';
+
+
+                        break;
+                    }
+                }
+            }
+
+
+            // STEP 3: DON'T CREATE IF TIME IS BUSY
+
+
+            if (timeConflict) {
+
+                return result;
+            }
+
+
+            // STEP 4: CREATE GOOGLE MEET
+
+
+            HttpRequest req =
+                new HttpRequest();
+
+
+            req.setEndpoint(
+                'callout:GmeetNamedCredential/calendars/primary/events' +
+                '?conferenceDataVersion=1'
+            );
+
+
+            req.setMethod('POST');
+
+
+            req.setHeader(
+                'Content-Type',
+                'application/json'
+            );
+
+
+            String requestId =
+                'test-' +
+                String.valueOf(
+                    DateTime.now().getTime()
+                );
+
+
+            // BUILD EVENT BODY
+
+
+            Map<String, Object> eventBody =
+                new Map<String, Object>();
+
+
+            eventBody.put(
+                'summary',
+                meetName
+            );
+
+
+            eventBody.put(
+                'start',
+                new Map<String, Object>{
+                    'dateTime' =>
+                        requestedStart.format(
+                            'yyyy-MM-dd\'T\'HH:mm:ss'
+                        ),
+
+                    'timeZone' =>
+                        'Asia/Kolkata'
+                }
+            );
+
+
+            eventBody.put(
+                'end',
+                new Map<String, Object>{
+                    'dateTime' =>
+                        requestedEnd.format(
+                            'yyyy-MM-dd\'T\'HH:mm:ss'
+                        ),
+
+                    'timeZone' =>
+                        'Asia/Kolkata'
+                }
+            );
+
+
+
+            // DYNAMIC MULTIPLE ATTENDEES
+
+
+            List<Object> attendees =
+                new List<Object>();
+
+
+            for (String email : attendeeEmails) {
+
+                if (String.isBlank(email)) {
+                    continue;
+                }
+
+
+                String cleanEmail =
+                    email.trim();
+
+
+                attendees.add(
+                    new Map<String, Object>{
+                        'email' => cleanEmail
+                    }
+                );
+
+
+                result.attendeeEmails.add(
+                    cleanEmail
+                );
+            }
+
+
+            if (attendees.isEmpty()) {
+
+                throw new GmeetException(
+                    'No valid attendee email addresses were provided.'
+                );
+            }
+
+
+            eventBody.put(
+                'attendees',
+                attendees
+            );
+
+
+            // GOOGLE MEET CONFERENCE
+
+
+            eventBody.put(
+                'conferenceData',
+                new Map<String, Object>{
+
+                    'createRequest' =>
+                        new Map<String, Object>{
+
+                            'requestId' =>
+                                requestId,
+
+
+                            'conferenceSolutionKey' =>
+                                new Map<String, Object>{
+
+                                    'type' =>
+                                        'hangoutsMeet'
+                                }
+                        }
+                }
+            );
+
+
+            req.setBody(
+                JSON.serialize(eventBody)
+            );
+
+
+         
+            // SEND CREATE REQUEST
+      
+
+            HttpResponse res =
+                new Http().send(req);
+
+
+            if (
+                res.getStatusCode() < 200 ||
+                res.getStatusCode() >= 300
+            ) {
+
+                throw new GmeetException(
+                    'Google Meet creation failed. ' +
+                    'Status: ' +
+                    res.getStatusCode() +
+                    ' Response: ' +
+                    res.getBody()
+                );
+            }
+
+
+       
+            // READ CREATED EVENT RESPONSE
+          
+
+            Map<String, Object> createdEvent =
+                (Map<String, Object>)
+                JSON.deserializeUntyped(
+                    res.getBody()
+                );
+
+
+           
+            // FILL WRAPPER
+     
+
+            result.existingMeeting =
+                false;
+
+
+            result.meetingName =
+                createdEvent.containsKey(
+                    'summary'
+                )
+                ? String.valueOf(
+                    createdEvent.get(
+                        'summary'
+                    )
+                )
+                : meetName;
+
+
+            result.meetingId =
+                createdEvent.containsKey('id')
+                ? String.valueOf(
+                    createdEvent.get('id')
+                )
+                : null;
+
+
+            result.startTime =
+                requestedStart;
+
+
+            result.endTime =
+                requestedEnd;
+
+
+            if (
+                createdEvent.containsKey(
+                    'hangoutLink'
+                )
+            ) {
+
+                result.meetingUrl =
+                    String.valueOf(
+                        createdEvent.get(
+                            'hangoutLink'
+                        )
+                    );
+            }
+
+
+            result.message =
+                'Google Meet created successfully.';
+
+
+            return result;
+        }
+
+
+        
+        // GMEET EXCEPTION
+        
+
+        catch (GmeetException e) {
+
+            System.debug(
+                'GMEET ERROR: ' +
+                e.getMessage()
+            );
+
+            throw e;
+        }
+
+
+                // CALLOUT EXCEPTION
+     
+
+        catch (CalloutException e) {
+
+            System.debug(
+                'CALLOUT ERROR: ' +
+                e.getMessage()
+            );
+
+            throw new GmeetException(
+                'Google Calendar callout failed: ' +
+                e.getMessage()
+            );
+        }
+
+
+       
+        // GENERAL EXCEPTION
+
+        catch (Exception e) {
+
+            System.debug(
+                'UNEXPECTED ERROR: ' +
+                e.getMessage()
+            );
+
+            throw new GmeetException(
+                'Unexpected error while creating Google Meet: ' +
+                e.getMessage()
+            );
+        }
+    }
+}
